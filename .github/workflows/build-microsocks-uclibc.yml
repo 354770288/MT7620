@@ -7,14 +7,14 @@ on:
     branches: [ master, main ]
   pull_request:
     branches: [ master, main ]
-  workflow_dispatch: # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch: # 允许手动触发
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     env:
-      # OpenWrt Chaos Calmer 15.05.1 SDK for mt7621 (uses uClibc)
+      # 更新为你指定的、更精确的 SDK 下载地址
       SDK_URL: https://archive.openwrt.org/chaos_calmer/15.05.1/ramips/mt7621/OpenWrt-SDK-15.05.1-ramips-mt7621_gcc-4.8-linaro_uClibc-0.9.33.2.Linux-x86_64.tar.bz2
       ARTIFACT_NAME: microsocks-ipk-mt7621-uclibc
 
@@ -33,6 +33,7 @@ jobs:
         run: |
           wget -O openwrt-sdk.tar.bz2 "${{ env.SDK_URL }}"
           tar -xjf openwrt-sdk.tar.bz2
+          # 自动查找解压后的 SDK 目录并重命名，增强脚本适应性
           SDK_DIR=$(find . -maxdepth 1 -type d -name "OpenWrt-SDK*")
           mv "$SDK_DIR" openwrt-sdk
           echo "SDK extracted and renamed to 'openwrt-sdk'"
@@ -42,11 +43,10 @@ jobs:
           mkdir -p openwrt-sdk/package/microsocks/src
           mkdir -p openwrt-sdk/package/microsocks/files
           cp ./microsocks/*.c ./microsocks/*.h ./microsocks/COPYING ./microsocks/Makefile openwrt-sdk/package/microsocks/src/
-          echo "Source files copied to package/microsocks/src/"
           
       - name: Create init script and config files
         run: |
-          # Dynamically create the init.d script
+          # 动态创建 init.d 启动脚本
           cat > openwrt-sdk/package/microsocks/files/microsocks.init << 'EOF'
           #!/bin/sh /etc/rc.common
           START=90
@@ -77,7 +77,7 @@ jobs:
           EOF
           chmod +x openwrt-sdk/package/microsocks/files/microsocks.init
 
-          # Dynamically create the UCI config file
+          # 动态创建 UCI 配置文件
           cat > openwrt-sdk/package/microsocks/files/microsocks.config << 'EOF'
           config microsocks 'config'
               option enabled '0'
@@ -93,12 +93,11 @@ jobs:
 
           PKG_NAME:=microsocks
           PKG_VERSION:=1.0.5
-          PKG_RELEASE:=3 # Incremented release for new build script
+          PKG_RELEASE:=5 # 再次增加版本号，标记本次修正
 
           PKG_LICENSE:=MIT
           PKG_MAINTAINER:=Your Name <your@email.com>
 
-          # 指定使用本地源码。注意：这里我们不再定义 PKG_BUILD_DIR，让系统自动处理
           include $(INCLUDE_DIR)/package.mk
 
           define Package/microsocks
@@ -110,25 +109,19 @@ jobs:
           endef
 
           define Package/microsocks/description
-            Microsocks is a tiny, portable SOCKS5 server with very moderate
-            resource usage for embedded devices.
+            Microsocks is a tiny, portable SOCKS5 server.
           endef
 
-          # ===============================================================
-          # 关键修改：移除了多余的 Build/Prepare 块，以解决 : 和 :: 冲突
-          # OpenWrt 构建系统会自动将 ./src/ 目录中的文件复制到构建目录
-          # ===============================================================
-
-          # This uses the original Makefile from the microsocks source code
+          # 使用 microsocks 源码自带的 Makefile 进行编译
           define Build/Compile
           	$(MAKE) -C $(PKG_BUILD_DIR) \
           		CC="$(TARGET_CC)" \
           		CFLAGS="$(TARGET_CFLAGS) $(TARGET_CPPFLAGS) -std=c99" \
           		LDFLAGS="$(TARGET_LDFLAGS)" \
-          		all
+          		microsocks # <-- 关键修正！将 'all' 改为 'microsocks'
           endef
 
-          # Install the compiled binary and the config/init files
+          # 安装编译好的二进制文件和配置文件
           define Package/microsocks/install
           	$(INSTALL_DIR) $(1)/usr/bin
           	$(INSTALL_BIN) $(PKG_BUILD_DIR)/microsocks $(1)/usr/bin/
