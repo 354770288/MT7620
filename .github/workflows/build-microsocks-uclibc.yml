@@ -24,9 +24,6 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          # ======================== 关键修正 ========================
-          # 安装 ccache，解决 "ccache: not found" 错误
-          # ==========================================================
           sudo apt-get install -y build-essential ccache libncurses5-dev gawk git libssl-dev \
             gettext zlib1g-dev swig unzip time rsync python3 subversion wget curl \
             bzip2 xz-utils file
@@ -91,7 +88,7 @@ jobs:
 
           PKG_NAME:=microsocks
           PKG_VERSION:=1.0.5
-          PKG_RELEASE:=7 # 标记最终修正
+          PKG_RELEASE:=8 # 标记最终修正
 
           PKG_LICENSE:=MIT
           PKG_MAINTAINER:=Your Name <your@email.com>
@@ -109,6 +106,15 @@ jobs:
           define Package/microsocks/description
             Microsocks is a tiny, portable SOCKS5 server.
           endef
+
+          # ======================== 关键修正 ========================
+          # 补上 Build/Prepare 步骤，将源码从 ./src 复制到编译目录 $(PKG_BUILD_DIR)
+          # 这是解决 "No such file or directory" 错误的核心
+          define Build/Prepare
+          	mkdir -p $(PKG_BUILD_DIR)
+          	$(CP) ./src/* $(PKG_BUILD_DIR)/
+          endef
+          # ==========================================================
 
           define Build/Compile
           	$(TARGET_CC) $(TARGET_CFLAGS) -o $(PKG_BUILD_DIR)/microsocks \
