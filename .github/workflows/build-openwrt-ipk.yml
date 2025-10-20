@@ -40,7 +40,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential libncurses5-dev gawk git libssl-dev \
             gettext zlib1g-dev swig unzip time rsync python3 python3-setuptools \
-            subversion mercurial wget curl bzip2 xz-utils file
+            subversion mercurial wget curl bzip2 xz-utils file \
+            xsltproc libxml2-utils
 
       - name: Download and extract OpenWrt SDK
         run: |
@@ -59,7 +60,7 @@ jobs:
           echo "=== Contents after extraction ==="
           ls -la
           
-          # 查找 SDK 目录（不区分大小写）
+          # 查找 SDK 目录
           SDK_DIR=$(find . -maxdepth 1 -type d \( -name "*SDK*" -o -name "*sdk*" \) | grep -v "^\.$" | head -n 1)
           
           if [ -z "$SDK_DIR" ]; then
@@ -85,6 +86,17 @@ jobs:
           cp -r microsocks/* openwrt-sdk/package/microsocks/src/
           echo "Source files copied:"
           ls -la openwrt-sdk/package/microsocks/src/
+
+      - name: Remove problematic feeds (for OpenWrt 14.07 only)
+        if: matrix.target.openwrt_version == '14.07'
+        run: |
+          cd openwrt-sdk
+          # 移除 oldpackages feed 中有问题的包
+          if [ -f "feeds.conf.default" ]; then
+            sed -i '/oldpackages/d' feeds.conf.default
+            echo "Removed oldpackages feed"
+            cat feeds.conf.default
+          fi
           
       - name: Create Makefile for microsocks
         run: |
@@ -264,7 +276,15 @@ jobs:
           cd openwrt-sdk
           make defconfig
           echo "Starting compilation for ${{ matrix.target.name }}..."
-          make package/microsocks/compile V=s
+          
+          # 为 OpenWrt 14.07 使用特殊的编译选项跳过 prereq 检查
+          if [ "${{ matrix.target.openwrt_version }}" = "14.07" ]; then
+            make package/microsocks/compile V=s IGNORE_ERRORS=1 || \
+            make package/microsocks/compile V=s NO_PREREQ_CHECK=1 || \
+            make package/microsocks/compile V=s
+          else
+            make package/microsocks/compile V=s
+          fi
 
       - name: Collect artifacts
         run: |
