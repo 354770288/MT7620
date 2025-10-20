@@ -1,0 +1,198 @@
+name: Build OpenWrt IPK for MT7620/MT7621
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - name: ramips-mt7621
+            sdk_url: https://downloads.openwrt.org/snapshots/targets/ramips/mt7621/openwrt-imagebuilder-ramips-mt7621.Linux-x86_64.tar.zst
+            arch: mipsel_24kc
+          - name: ramips-mt7620
+            sdk_url: https://downloads.openwrt.org/snapshots/targets/ramips/mt7620/openwrt-sdk-ramips-mt7620_gcc-14.3.0_musl.Linux-x86_64.tar.zst
+            arch: mipsel_24kc
+
+    steps:
+      - name: Checkout microsocks repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libncurses5-dev gawk git libssl-dev \
+            gettext zlib1g-dev swig unzip time rsync python3 python3-setuptools \
+            python3-yaml wget curl zstd
+
+      - name: Download and extract OpenWrt SDK
+        run: |
+          wget -O openwrt-sdk.tar.zst "${{ matrix.target.sdk_url }}"
+          zstd -d openwrt-sdk.tar.zst
+          tar -xf openwrt-sdk.tar
+          mv openwrt-* openwrt-sdk
+          ls -la openwrt-sdk/
+
+      - name: Create package directory structure
+        run: |
+          mkdir -p openwrt-sdk/package/microsocks
+          
+      - name: Create Makefile for microsocks
+        run: |
+          cat > openwrt-sdk/package/microsocks/Makefile << 'EOF'
+          include $(TOPDIR)/rules.mk
+
+          PKG_NAME:=microsocks
+          PKG_VERSION:=1.0.3
+          PKG_RELEASE:=1
+
+          PKG_SOURCE_PROTO:=git
+          PKG_SOURCE_URL:=https://github.com/rofl0r/microsocks.git
+          PKG_SOURCE_VERSION:=HEAD
+          PKG_MIRROR_HASH:=skip
+
+          PKG_LICENSE:=MIT
+          PKG_LICENSE_FILES:=COPYING
+          PKG_MAINTAINER:=rofl0r
+
+          include $(INCLUDE_DIR)/package.mk
+
+          define Package/microsocks
+            SECTION:=net
+            CATEGORY:=Network
+            TITLE:=Tiny, portable SOCKS5 server
+            URL:=https://github.com/rofl0r/microsocks
+            DEPENDS:=+libpthread
+          endef
+
+          define Package/microsocks/description
+            Microsocks is a tiny, portable SOCKS5 server with very moderate
+            resource usage. It is designed to run on old routers or embedded
+            devices with limited resources.
+          endef
+
+          define Build/Compile
+          	$(MAKE) -C $(PKG_BUILD_DIR) \
+          		CC="$(TARGET_CC)" \
+          		CFLAGS="$(TARGET_CFLAGS) $(TARGET_CPPFLAGS)" \
+          		LDFLAGS="$(TARGET_LDFLAGS)"
+          endef
+
+          define Package/microsocks/install
+          	$(INSTALL_DIR) $(1)/usr/bin
+          	$(INSTALL_BIN) $(PKG_BUILD_DIR)/microsocks $(1)/usr/bin/
+          	$(INSTALL_DIR) $(1)/etc/init.d
+          	$(INSTALL_BIN) ./files/microsocks.init $(1)/etc/init.d/microsocks
+          	$(INSTALL_DIR) $(1)/etc/config
+          	$(INSTALL_CONF) ./files/microsocks.config $(1)/etc/config/microsocks
+          endef
+
+          $(eval $(call BuildPackage,microsocks))
+          EOF
+
+      - name: Create init script
+        run: |
+          mkdir -p openwrt-sdk/package/microsocks/files
+          cat > openwrt-sdk/package/microsocks/files/microsocks.init << 'EOF'
+          #!/bin/sh /etc/rc.common
+
+          START=90
+          STOP=10
+
+          USE_PROCD=1
+          PROG=/usr/bin/microsocks
+
+          start_service() {
+              config_load microsocks
+              
+              local enabled
+              local port
+              local user
+              local auth_user
+              local auth_pass
+              local bind_addr
+              
+              config_get_bool enabled config enabled 0
+              [ "$enabled" -eq 0 ] && return
+              
+              config_get port config port 1080
+              config_get user config user nobody
+              config_get auth_user config auth_user
+              config_get auth_pass config auth_pass
+              config_get bind_addr config bind_addr 0.0.0.0
+              
+              procd_open_instance
+              procd_set_param command $PROG -i $bind_addr -p $port
+              
+              [ -n "$auth_user" ] && [ -n "$auth_pass" ] && {
+                  procd_append_param command -u "$auth_user"
+                  procd_append_param command -P "$auth_pass"
+              }
+              
+              procd_set_param respawn
+              procd_set_param user $user
+              procd_set_param stdout 1
+              procd_set_param stderr 1
+              procd_close_instance
+          }
+          EOF
+          chmod +x openwrt-sdk/package/microsocks/files/microsocks.init
+
+      - name: Create config file
+        run: |
+          cat > openwrt-sdk/package/microsocks/files/microsocks.config << 'EOF'
+          config microsocks 'config'
+              option enabled '0'
+              option port '1080'
+              option user 'nobody'
+              option bind_addr '0.0.0.0'
+              # option auth_user 'username'
+              # option auth_pass 'password'
+          EOF
+
+      - name: Update and install feeds
+        run: |
+          cd openwrt-sdk
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Configure build
+        run: |
+          cd openwrt-sdk
+          make defconfig
+          make package/microsocks/compile V=s
+
+      - name: Find and collect IPK files
+        run: |
+          mkdir -p artifacts
+          find openwrt-sdk/bin -name "microsocks*.ipk" -exec cp {} artifacts/ \;
+          ls -lh artifacts/
+
+      - name: Upload IPK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: microsocks-ipk-${{ matrix.target.name }}
+          path: artifacts/*.ipk
+          if-no-files-found: error
+
+      - name: Create release info
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: |
+          cd artifacts
+          sha256sum *.ipk > sha256sums.txt
+          cat sha256sums.txt
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        with:
+          name: microsocks-release-${{ matrix.target.name }}
+          path: |
+            artifacts/*.ipk
+            artifacts/sha256sums.txt
