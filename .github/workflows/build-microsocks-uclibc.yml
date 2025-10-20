@@ -7,14 +7,13 @@ on:
     branches: [ master, main ]
   pull_request:
     branches: [ master, main ]
-  workflow_dispatch: # 允许手动触发
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     env:
-      # 更新为你指定的、更精确的 SDK 下载地址
       SDK_URL: https://archive.openwrt.org/chaos_calmer/15.05.1/ramips/mt7621/OpenWrt-SDK-15.05.1-ramips-mt7621_gcc-4.8-linaro_uClibc-0.9.33.2.Linux-x86_64.tar.bz2
       ARTIFACT_NAME: microsocks-ipk-mt7621-uclibc
 
@@ -33,16 +32,15 @@ jobs:
         run: |
           wget -O openwrt-sdk.tar.bz2 "${{ env.SDK_URL }}"
           tar -xjf openwrt-sdk.tar.bz2
-          # 自动查找解压后的 SDK 目录并重命名，增强脚本适应性
           SDK_DIR=$(find . -maxdepth 1 -type d -name "OpenWrt-SDK*")
           mv "$SDK_DIR" openwrt-sdk
-          echo "SDK extracted and renamed to 'openwrt-sdk'"
 
       - name: Prepare OpenWrt package structure from source
         run: |
+          # 我们不再需要复制源码自带的 Makefile，因为它不会被使用
           mkdir -p openwrt-sdk/package/microsocks/src
           mkdir -p openwrt-sdk/package/microsocks/files
-          cp ./microsocks/*.c ./microsocks/*.h ./microsocks/COPYING ./microsocks/Makefile openwrt-sdk/package/microsocks/src/
+          cp ./microsocks/*.c ./microsocks/*.h ./microsocks/COPYING openwrt-sdk/package/microsocks/src/
           
       - name: Create init script and config files
         run: |
@@ -93,7 +91,7 @@ jobs:
 
           PKG_NAME:=microsocks
           PKG_VERSION:=1.0.5
-          PKG_RELEASE:=5 # 再次增加版本号，标记本次修正
+          PKG_RELEASE:=6 # 标记最终修正
 
           PKG_LICENSE:=MIT
           PKG_MAINTAINER:=Your Name <your@email.com>
@@ -112,16 +110,19 @@ jobs:
             Microsocks is a tiny, portable SOCKS5 server.
           endef
 
-          # 使用 microsocks 源码自带的 Makefile 进行编译
+          # ======================== 关键修正 ========================
+          # 我们不再使用源码的 Makefile，而是直接定义编译命令
           define Build/Compile
-          	$(MAKE) -C $(PKG_BUILD_DIR) \
-          		CC="$(TARGET_CC)" \
-          		CFLAGS="$(TARGET_CFLAGS) $(TARGET_CPPFLAGS) -std=c99" \
-          		LDFLAGS="$(TARGET_LDFLAGS)" \
-          		microsocks # <-- 关键修正！将 'all' 改为 'microsocks'
+          	# 直接调用交叉编译器 $(TARGET_CC)
+          	# 将所有 .c 源文件编译成一个名为 microsocks 的可执行文件
+          	$(TARGET_CC) $(TARGET_CFLAGS) -o $(PKG_BUILD_DIR)/microsocks \
+          		$(PKG_BUILD_DIR)/server.c \
+          		$(PKG_BUILD_DIR)/sblist.c \
+          		$(PKG_BUILD_DIR)/sblist_delete.c \
+          		$(TARGET_LDFLAGS) -lpthread
           endef
+          # ==========================================================
 
-          # 安装编译好的二进制文件和配置文件
           define Package/microsocks/install
           	$(INSTALL_DIR) $(1)/usr/bin
           	$(INSTALL_BIN) $(PKG_BUILD_DIR)/microsocks $(1)/usr/bin/
