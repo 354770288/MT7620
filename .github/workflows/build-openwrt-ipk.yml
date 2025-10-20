@@ -56,15 +56,24 @@ jobs:
             tar -xJf openwrt-sdk.tar.xz
           fi
           
-          SDK_DIR=$(find . -maxdepth 1 -type d -name "*OpenWrt-SDK*" -o -name "*openwrt-sdk*" | head -n 1)
+          echo "=== Contents after extraction ==="
+          ls -la
+          
+          # 查找 SDK 目录（不区分大小写）
+          SDK_DIR=$(find . -maxdepth 1 -type d \( -name "*SDK*" -o -name "*sdk*" \) | grep -v "^\.$" | head -n 1)
+          
           if [ -z "$SDK_DIR" ]; then
-            echo "SDK directory not found!"
+            echo "ERROR: SDK directory not found!"
+            echo "Available directories:"
             ls -la
             exit 1
           fi
           
+          echo "Found SDK directory: $SDK_DIR"
           mv "$SDK_DIR" openwrt-sdk
-          echo "SDK extracted successfully"
+          echo "SDK extracted and renamed successfully"
+          
+          echo "=== SDK contents ==="
           ls -la openwrt-sdk/
 
       - name: Prepare package directory
@@ -261,7 +270,7 @@ jobs:
         run: |
           mkdir -p artifacts
           
-          # 查找 .ipk 文件（14.07 和 23.05 都使用 ipk）
+          # 查找 .ipk 文件
           find openwrt-sdk/bin -name "microsocks*.ipk" -exec cp {} artifacts/ \; 2>/dev/null || true
           
           if [ -z "$(ls -A artifacts/)" ]; then
