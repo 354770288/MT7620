@@ -39,7 +39,8 @@ jobs:
         run: |
           mkdir -p openwrt-sdk/package/microsocks/src
           mkdir -p openwrt-sdk/package/microsocks/files
-          cp ./microsocks/*.c ./microsocks/*.h ./microsocks/COPYING openwrt-sdk/package/microsocks/src/
+          # 这次我们把源码自带的 Makefile 也复制进去，让 OpenWrt 自己决定如何使用
+          cp ./microsocks/* openwrt-sdk/package/microsocks/src/
           
       - name: Create init script and config files
         run: |
@@ -88,10 +89,13 @@ jobs:
 
           PKG_NAME:=microsocks
           PKG_VERSION:=1.0.5
-          PKG_RELEASE:=8 # 标记最终修正
+          PKG_RELEASE:=9 # 最终版
 
           PKG_LICENSE:=MIT
           PKG_MAINTAINER:=Your Name <your@email.com>
+
+          # 这里我们使用 PKG_SOURCE_DIR，让系统自动处理源码路径
+          PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
 
           include $(INCLUDE_DIR)/package.mk
 
@@ -107,25 +111,22 @@ jobs:
             Microsocks is a tiny, portable SOCKS5 server.
           endef
 
-          # ======================== 关键修正 ========================
-          # 补上 Build/Prepare 步骤，将源码从 ./src 复制到编译目录 $(PKG_BUILD_DIR)
-          # 这是解决 "No such file or directory" 错误的核心
+          # 准备步骤：将我们放在 ./src 目录的源码复制到编译目录
           define Build/Prepare
           	mkdir -p $(PKG_BUILD_DIR)
           	$(CP) ./src/* $(PKG_BUILD_DIR)/
           endef
-          # ==========================================================
 
-          define Build/Compile
-          	$(TARGET_CC) $(TARGET_CFLAGS) -o $(PKG_BUILD_DIR)/microsocks \
-          		$(PKG_BUILD_DIR)/server.c \
-          		$(PKG_BUILD_DIR)/sblist.c \
-          		$(PKG_BUILD_DIR)/sblist_delete.c \
-          		$(TARGET_LDFLAGS) -lpthread
-          endef
+          # ======================== 最终修正 ========================
+          # 我们删除了所有自作聪明的 Build/Compile 指令。
+          # 让 OpenWrt 的默认规则自动处理编译和链接。
+          # 它会自动找到 $(PKG_BUILD_DIR) 里的 Makefile 并执行，或者编译所有 .c 文件。
+          # 这是最稳定、最兼容的方式。
+          # ==========================================================
 
           define Package/microsocks/install
           	$(INSTALL_DIR) $(1)/usr/bin
+          	# 注意这里我们从源码自带的 Makefile 编译出的程序名 PROG=microsocks 来安装
           	$(INSTALL_BIN) $(PKG_BUILD_DIR)/microsocks $(1)/usr/bin/
           	$(INSTALL_DIR) $(1)/etc/init.d
           	$(INSTALL_BIN) ./files/microsocks.init $(1)/etc/init.d/microsocks
