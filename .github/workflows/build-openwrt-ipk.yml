@@ -14,12 +14,14 @@ jobs:
       fail-fast: false
       matrix:
         target:
-          - name: ramips-mt7621
-            sdk_url: https://downloads.openwrt.org/snapshots/targets/ramips/mt7621/openwrt-sdk-ramips-mt7621_gcc-14.3.0_musl.Linux-x86_64.tar.zst
-            arch: mipsel_24kc
           - name: ramips-mt7620
-            sdk_url: https://downloads.openwrt.org/snapshots/targets/ramips/mt7620/openwrt-sdk-ramips-mt7620_gcc-14.3.0_musl.Linux-x86_64.tar.zst
-            arch: mipsel_24kc
+            sdk_url: https://archive.openwrt.org/barrier_breaker/14.07/ramips/mt7620a/OpenWrt-SDK-ramips-for-linux-x86_64-gcc-4.8-linaro_uClibc-0.9.33.2.tar.bz2
+            sdk_format: bz2
+            openwrt_version: "14.07"
+          - name: ramips-mt7621
+            sdk_url: https://archive.openwrt.org/releases/23.05.0/targets/ramips/mt7621/openwrt-sdk-23.05.0-ramips-mt7621_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+            sdk_format: xz
+            openwrt_version: "23.05"
 
     steps:
       - name: Checkout repository
@@ -38,18 +40,32 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential libncurses5-dev gawk git libssl-dev \
             gettext zlib1g-dev swig unzip time rsync python3 python3-setuptools \
-            python3-yaml wget curl zstd file
+            subversion mercurial wget curl bzip2 xz-utils file
 
       - name: Download and extract OpenWrt SDK
         run: |
           echo "Downloading SDK from: ${{ matrix.target.sdk_url }}"
-          wget -O openwrt-sdk.tar.zst "${{ matrix.target.sdk_url }}"
-          zstd -d openwrt-sdk.tar.zst
-          tar -xf openwrt-sdk.tar
           
-          SDK_DIR=$(find . -maxdepth 1 -type d -name "openwrt-sdk-*" | head -n 1)
+          if [ "${{ matrix.target.sdk_format }}" = "bz2" ]; then
+            wget -O openwrt-sdk.tar.bz2 "${{ matrix.target.sdk_url }}"
+            echo "Extracting bz2 archive..."
+            tar -xjf openwrt-sdk.tar.bz2
+          else
+            wget -O openwrt-sdk.tar.xz "${{ matrix.target.sdk_url }}"
+            echo "Extracting xz archive..."
+            tar -xJf openwrt-sdk.tar.xz
+          fi
+          
+          SDK_DIR=$(find . -maxdepth 1 -type d -name "*OpenWrt-SDK*" -o -name "*openwrt-sdk*" | head -n 1)
+          if [ -z "$SDK_DIR" ]; then
+            echo "SDK directory not found!"
+            ls -la
+            exit 1
+          fi
+          
           mv "$SDK_DIR" openwrt-sdk
           echo "SDK extracted successfully"
+          ls -la openwrt-sdk/
 
       - name: Prepare package directory
         run: |
@@ -58,23 +74,21 @@ jobs:
           
           # 复制仓库中的 microsocks 源码
           cp -r microsocks/* openwrt-sdk/package/microsocks/src/
+          echo "Source files copied:"
           ls -la openwrt-sdk/package/microsocks/src/
           
       - name: Create Makefile for microsocks
         run: |
-          cat > openwrt-sdk/package/microsocks/Makefile << 'EOF'
+          if [ "${{ matrix.target.openwrt_version }}" = "14.07" ]; then
+            # OpenWrt 14.07 (Barrier Breaker) 兼容的 Makefile
+            cat > openwrt-sdk/package/microsocks/Makefile << 'EOF'
           include $(TOPDIR)/rules.mk
 
           PKG_NAME:=microsocks
           PKG_VERSION:=1.0.5
           PKG_RELEASE:=1
 
-          PKG_LICENSE:=MIT
-          PKG_LICENSE_FILES:=COPYING
-          PKG_MAINTAINER:=rofl0r
-
           PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
-          PKG_BUILD_PARALLEL:=1
 
           include $(INCLUDE_DIR)/package.mk
 
@@ -88,8 +102,7 @@ jobs:
 
           define Package/microsocks/description
             Microsocks is a tiny, portable SOCKS5 server with very moderate
-            resource usage. It is designed to run on old routers or embedded
-            devices with limited resources.
+            resource usage for embedded devices.
           endef
 
           define Build/Prepare
@@ -116,6 +129,62 @@ jobs:
 
           $(eval $(call BuildPackage,microsocks))
           EOF
+          else
+            # OpenWrt 23.05+ 的 Makefile
+            cat > openwrt-sdk/package/microsocks/Makefile << 'EOF'
+          include $(TOPDIR)/rules.mk
+
+          PKG_NAME:=microsocks
+          PKG_VERSION:=1.0.5
+          PKG_RELEASE:=1
+
+          PKG_LICENSE:=MIT
+          PKG_LICENSE_FILES:=COPYING
+          PKG_MAINTAINER:=rofl0r
+
+          PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
+          PKG_BUILD_PARALLEL:=1
+
+          include $(INCLUDE_DIR)/package.mk
+
+          define Package/microsocks
+            SECTION:=net
+            CATEGORY:=Network
+            TITLE:=Tiny, portable SOCKS5 server
+            URL:=https://github.com/rofl0r/microsocks
+            DEPENDS:=+libpthread
+          endef
+
+          define Package/microsocks/description
+            Microsocks is a tiny, portable SOCKS5 server with very moderate
+            resource usage for embedded devices.
+          endef
+
+          define Build/Prepare
+          	mkdir -p $(PKG_BUILD_DIR)
+          	$(CP) ./src/* $(PKG_BUILD_DIR)/
+          endef
+
+          define Build/Compile
+          	$(MAKE) -C $(PKG_BUILD_DIR) \
+          		CC="$(TARGET_CC)" \
+          		CFLAGS="$(TARGET_CFLAGS) $(TARGET_CPPFLAGS)" \
+          		LDFLAGS="$(TARGET_LDFLAGS)" \
+          		microsocks
+          endef
+
+          define Package/microsocks/install
+          	$(INSTALL_DIR) $(1)/usr/bin
+          	$(INSTALL_BIN) $(PKG_BUILD_DIR)/microsocks $(1)/usr/bin/
+          	$(INSTALL_DIR) $(1)/etc/init.d
+          	$(INSTALL_BIN) ./files/microsocks.init $(1)/etc/init.d/microsocks
+          	$(INSTALL_DIR) $(1)/etc/config
+          	$(INSTALL_CONF) ./files/microsocks.config $(1)/etc/config/microsocks
+          endef
+
+          $(eval $(call BuildPackage,microsocks))
+          EOF
+          fi
 
       - name: Create init script
         run: |
@@ -129,9 +198,15 @@ jobs:
           PROG=/usr/bin/microsocks
 
           start_service() {
+              . /lib/functions.sh
               config_load microsocks
               
-              local enabled port user auth_user auth_pass bind_addr
+              local enabled
+              local port
+              local user
+              local auth_user
+              local auth_pass
+              local bind_addr
               
               config_get_bool enabled config enabled 0
               [ "$enabled" -eq 0 ] && return
@@ -151,9 +226,6 @@ jobs:
               }
               
               procd_set_param respawn
-              procd_set_param user $user
-              procd_set_param stdout 1
-              procd_set_param stderr 1
               procd_close_instance
           }
           EOF
@@ -175,44 +247,55 @@ jobs:
       - name: Update feeds
         run: |
           cd openwrt-sdk
-          ./scripts/feeds update -a || true
-          ./scripts/feeds install -a || true
+          ./scripts/feeds update -a || echo "Feed update completed with warnings"
+          ./scripts/feeds install -a || echo "Feed install completed with warnings"
 
       - name: Compile package
         run: |
           cd openwrt-sdk
           make defconfig
-          make package/microsocks/compile V=s -j$(nproc)
+          echo "Starting compilation for ${{ matrix.target.name }}..."
+          make package/microsocks/compile V=s
 
       - name: Collect artifacts
         run: |
           mkdir -p artifacts
-          find openwrt-sdk/bin -name "microsocks*.ipk" -exec cp {} artifacts/ \;
+          
+          # 查找 .ipk 文件（14.07 和 23.05 都使用 ipk）
+          find openwrt-sdk/bin -name "microsocks*.ipk" -exec cp {} artifacts/ \; 2>/dev/null || true
           
           if [ -z "$(ls -A artifacts/)" ]; then
             echo "No IPK files found!"
-            find openwrt-sdk/bin -type f
+            echo "Searching for any build output..."
+            find openwrt-sdk/bin -type f -name "*.ipk" -o -name "*.apk"
             exit 1
           fi
           
           ls -lh artifacts/
-          echo "Build successful for ${{ matrix.target.name }}"
+          echo "✅ Build successful for ${{ matrix.target.name }} (OpenWrt ${{ matrix.target.openwrt_version }})"
 
       - name: Upload IPK artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: microsocks-ipk-${{ matrix.target.name }}
+          name: microsocks-ipk-${{ matrix.target.name }}-openwrt-${{ matrix.target.openwrt_version }}
           path: artifacts/*.ipk
           if-no-files-found: error
 
       - name: Create checksums
         run: |
           cd artifacts
+          md5sum *.ipk > md5sums.txt
           sha256sum *.ipk > sha256sums.txt
+          echo "=== MD5 Checksums ==="
+          cat md5sums.txt
+          echo ""
+          echo "=== SHA256 Checksums ==="
           cat sha256sums.txt
 
       - name: Upload checksums
         uses: actions/upload-artifact@v4
         with:
-          name: checksums-${{ matrix.target.name }}
-          path: artifacts/sha256sums.txt
+          name: checksums-${{ matrix.target.name }}-openwrt-${{ matrix.target.openwrt_version }}
+          path: |
+            artifacts/md5sums.txt
+            artifacts/sha256sums.txt
