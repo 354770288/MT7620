@@ -11,10 +11,11 @@ jobs:
   build:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false  # 添加这行，让一个失败不影响其他
       matrix:
         target:
           - name: ramips-mt7621
-            sdk_url: https://downloads.openwrt.org/snapshots/targets/ramips/mt7621/openwrt-imagebuilder-ramips-mt7621.Linux-x86_64.tar.zst
+            sdk_url: https://downloads.openwrt.org/snapshots/targets/ramips/mt7621/openwrt-sdk-ramips-mt7621_gcc-14.3.0_musl.Linux-x86_64.tar.zst
             arch: mipsel_24kc
           - name: ramips-mt7620
             sdk_url: https://downloads.openwrt.org/snapshots/targets/ramips/mt7620/openwrt-sdk-ramips-mt7620_gcc-14.3.0_musl.Linux-x86_64.tar.zst
@@ -24,24 +25,56 @@ jobs:
       - name: Checkout microsocks repository
         uses: actions/checkout@v4
 
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf "/usr/local/share/boost"
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          df -h
+
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential libncurses5-dev gawk git libssl-dev \
             gettext zlib1g-dev swig unzip time rsync python3 python3-setuptools \
-            python3-yaml wget curl zstd
+            python3-yaml wget curl zstd file
 
       - name: Download and extract OpenWrt SDK
         run: |
-          wget -O openwrt-sdk.tar.zst "${{ matrix.target.sdk_url }}"
-          zstd -d openwrt-sdk.tar.zst
-          tar -xf openwrt-sdk.tar
-          mv openwrt-* openwrt-sdk
+          echo "Downloading SDK from: ${{ matrix.target.sdk_url }}"
+          wget -O openwrt-sdk.tar.zst "${{ matrix.target.sdk_url }}" || {
+            echo "Failed to download SDK"
+            exit 1
+          }
+          
+          echo "Decompressing SDK..."
+          zstd -d openwrt-sdk.tar.zst || {
+            echo "Failed to decompress SDK"
+            exit 1
+          }
+          
+          echo "Extracting SDK..."
+          tar -xf openwrt-sdk.tar || {
+            echo "Failed to extract SDK"
+            exit 1
+          }
+          
+          # 找到实际的SDK目录并重命名
+          SDK_DIR=$(find . -maxdepth 1 -type d -name "openwrt-sdk-*" | head -n 1)
+          if [ -z "$SDK_DIR" ]; then
+            echo "SDK directory not found!"
+            ls -la
+            exit 1
+          fi
+          
+          mv "$SDK_DIR" openwrt-sdk
+          echo "SDK extracted successfully"
           ls -la openwrt-sdk/
 
       - name: Create package directory structure
         run: |
-          mkdir -p openwrt-sdk/package/microsocks
+          mkdir -p openwrt-sdk/package/microsocks/files
           
       - name: Create Makefile for microsocks
         run: |
@@ -54,12 +87,15 @@ jobs:
 
           PKG_SOURCE_PROTO:=git
           PKG_SOURCE_URL:=https://github.com/rofl0r/microsocks.git
+          PKG_SOURCE_DATE:=2024-01-01
           PKG_SOURCE_VERSION:=HEAD
           PKG_MIRROR_HASH:=skip
 
           PKG_LICENSE:=MIT
           PKG_LICENSE_FILES:=COPYING
           PKG_MAINTAINER:=rofl0r
+
+          PKG_BUILD_PARALLEL:=1
 
           include $(INCLUDE_DIR)/package.mk
 
@@ -81,7 +117,8 @@ jobs:
           	$(MAKE) -C $(PKG_BUILD_DIR) \
           		CC="$(TARGET_CC)" \
           		CFLAGS="$(TARGET_CFLAGS) $(TARGET_CPPFLAGS)" \
-          		LDFLAGS="$(TARGET_LDFLAGS)"
+          		LDFLAGS="$(TARGET_LDFLAGS)" \
+          		microsocks
           endef
 
           define Package/microsocks/install
@@ -98,7 +135,6 @@ jobs:
 
       - name: Create init script
         run: |
-          mkdir -p openwrt-sdk/package/microsocks/files
           cat > openwrt-sdk/package/microsocks/files/microsocks.init << 'EOF'
           #!/bin/sh /etc/rc.common
 
@@ -159,20 +195,37 @@ jobs:
       - name: Update and install feeds
         run: |
           cd openwrt-sdk
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
+          ./scripts/feeds update -a || echo "Feed update had warnings, continuing..."
+          ./scripts/feeds install -a || echo "Feed install had warnings, continuing..."
 
-      - name: Configure build
+      - name: Configure and compile
         run: |
           cd openwrt-sdk
+          
+          # 生成默认配置
           make defconfig
-          make package/microsocks/compile V=s
+          
+          # 编译 microsocks 包
+          echo "Starting compilation..."
+          make package/microsocks/compile V=s -j$(nproc) || {
+            echo "Compilation failed!"
+            exit 1
+          }
 
       - name: Find and collect IPK files
         run: |
           mkdir -p artifacts
           find openwrt-sdk/bin -name "microsocks*.ipk" -exec cp {} artifacts/ \;
+          
+          if [ -z "$(ls -A artifacts/)" ]; then
+            echo "No IPK files found!"
+            echo "Searching for any build output..."
+            find openwrt-sdk/bin -type f
+            exit 1
+          fi
+          
           ls -lh artifacts/
+          echo "Build successful for ${{ matrix.target.name }}"
 
       - name: Upload IPK artifacts
         uses: actions/upload-artifact@v4
@@ -182,17 +235,13 @@ jobs:
           if-no-files-found: error
 
       - name: Create release info
-        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
         run: |
           cd artifacts
           sha256sum *.ipk > sha256sums.txt
           cat sha256sums.txt
 
-      - name: Upload release artifacts
+      - name: Upload checksums
         uses: actions/upload-artifact@v4
-        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
         with:
-          name: microsocks-release-${{ matrix.target.name }}
-          path: |
-            artifacts/*.ipk
-            artifacts/sha256sums.txt
+          name: checksums-${{ matrix.target.name }}
+          path: artifacts/sha256sums.txt
